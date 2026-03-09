@@ -1,0 +1,14 @@
+env_name: SuperMarioBros-1-1-v3
+
+training:
+  episodes: 5000
+  gamma: 0.9
+  learning_rate: 0.00025
+  batch_size: 1
+  epsilon_start: 1.0
+  epsilon_min: 0.1
+  epsilon_decay: 0.99999975
+  target_update_freq: 10000
+  gradient_clip: 1.0
+
+device: cpu
