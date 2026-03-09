@@ -51,14 +51,14 @@ class D3QNAgent:
         """Initialize networks, optimizer, and exploration schedule.
 
         Args:
-            observation_shape (tuple[int, ...]): Model input shape as (channels, height, width).
+            observation_shape (tuple[int, ...]): Model input shape as `(channels, height, width)`.
             action_size (int): Number of discrete actions.
             gamma (float): Discount factor used in TD target computation.
             learning_rate (float): Adam optimizer learning rate.
             epsilon_start (float): Initial epsilon for epsilon-greedy exploration.
             epsilon_min (float): Minimum epsilon value.
             epsilon_decay (float): Multiplicative epsilon decay factor per step.
-            target_update_freq (int): Number of training steps between target syncs.
+            target_update_freq (int): Number of gradient steps between target-network syncs.
             gradient_clip (float): Maximum gradient norm for clipping.
             device (torch.device): Device used for tensor operations.
 
@@ -138,16 +138,45 @@ class D3QNAgent:
 
         state_tensor = self._state_to_tensor(transition.state)
         next_state_tensor = self._state_to_tensor(transition.next_state)
-        action_tensor = torch.tensor([[transition.action]], dtype=torch.long, device=self.device)
+        action_tensor = torch.tensor([transition.action], dtype=torch.long, device=self.device)
         reward_tensor = torch.tensor([transition.reward], dtype=torch.float32, device=self.device)
         done_tensor = torch.tensor([float(transition.done)], dtype=torch.float32, device=self.device)
 
-        current_q = self.policy_network(state_tensor).gather(1, action_tensor).squeeze(1)
+        return self._learn_from_batch(
+            states=state_tensor,
+            actions=action_tensor,
+            rewards=reward_tensor,
+            next_states=next_state_tensor,
+            dones=done_tensor,
+        )
+
+    def _learn_from_batch(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        next_states: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> float:
+        """Apply one gradient update from a mini-batch of transitions.
+
+        Args:
+            states (torch.Tensor): Batched state tensor `(batch, channels, height, width)`.
+            actions (torch.Tensor): Batched action indices `(batch,)`.
+            rewards (torch.Tensor): Batched rewards `(batch,)`.
+            next_states (torch.Tensor): Batched next-state tensor `(batch, channels, height, width)`.
+            dones (torch.Tensor): Batched terminal flags `(batch,)`, as floats in `{0.0, 1.0}`.
+
+        Returns:
+            float: Scalar Huber loss value.
+        """
+
+        current_q = self.policy_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            next_actions = self.policy_network(next_state_tensor).argmax(dim=1, keepdim=True)
-            next_q_target = self.target_network(next_state_tensor).gather(1, next_actions).squeeze(1)
-            target_q = reward_tensor + self.gamma * next_q_target * (1.0 - done_tensor)
+            next_actions = self.policy_network(next_states).argmax(dim=1, keepdim=True)
+            next_q_target = self.target_network(next_states).gather(1, next_actions).squeeze(1)
+            target_q = rewards + self.gamma * next_q_target * (1.0 - dones)
 
         loss = F.smooth_l1_loss(current_q, target_q)
 
@@ -195,7 +224,7 @@ class D3QNAgent:
             state (Any): Raw state output from the wrapped environment.
 
         Returns:
-            torch.Tensor: Float tensor on `self.device` with shape (batch, channels, height, width).
+            torch.Tensor: Float tensor on `self.device` with shape `(batch, channels, height, width)`.
         """
 
         state_array = np.array(state, copy=False, dtype=np.float32)
