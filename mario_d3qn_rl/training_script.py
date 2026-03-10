@@ -1,4 +1,4 @@
-"""Training entry point for Task 1 D3QN on SuperMarioBros-1-1-v3."""
+"""Unified training entry point for Mario D3QN assignment tasks."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import yaml
 from tqdm import tqdm
 
 from agents.d3qn_agent import D3QNAgent
+from agents.d3qn_er_agent import D3QNERAgent
 from environment.environment import create_env
 from utils.logger import TrainingLogger
 from utils.plotting import plot_training_curves
@@ -28,6 +29,27 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
     with config_path.open("r", encoding="utf-8") as config_file:
         return yaml.safe_load(config_file)
+
+
+def resolve_device(device_name: str) -> torch.device:
+    """Resolve a configured device name with safe fallback behavior.
+
+    Args:
+        device_name (str): Requested device name from config.
+
+    Returns:
+        torch.device: Selected PyTorch device for training.
+    """
+
+    normalized_name = device_name.strip().lower()
+
+    if normalized_name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if normalized_name == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    return torch.device(normalized_name)
 
 
 def make_mario_env(
@@ -51,7 +73,7 @@ def make_mario_env(
 
 
 def train() -> None:
-    """Run Task 1 training with online D3QN updates.
+    """Run training for the configured D3QN agent variant.
 
     Args:
         None
@@ -65,28 +87,55 @@ def train() -> None:
 
     env, observation_shape, action_size = create_env(config["env_name"])
     training_config = config["training"]
-    device = torch.device(config["device"])
+    replay_config = config.get("replay", {})
+    device = resolve_device(config["device"])
+    agent_type = str(config["agent_type"]).lower()
 
-    agent = D3QNAgent(
-        observation_shape=observation_shape,
-        action_size=action_size,
-        gamma=training_config["gamma"],
-        learning_rate=training_config["learning_rate"],
-        epsilon_start=training_config["epsilon_start"],
-        epsilon_min=training_config["epsilon_min"],
-        epsilon_decay=training_config["epsilon_decay"],
-        target_update_freq=training_config["target_update_freq"],
-        gradient_clip=training_config["gradient_clip"],
-        device=device,
-    )
+    if agent_type == "d3qn":
+        agent = D3QNAgent(
+            observation_shape=observation_shape,
+            action_size=action_size,
+            gamma=training_config["gamma"],
+            learning_rate=training_config["learning_rate"],
+            epsilon_start=training_config["epsilon_start"],
+            epsilon_min=training_config["epsilon_min"],
+            epsilon_decay=training_config["epsilon_decay"],
+            target_update_freq=training_config["target_update_freq"],
+            gradient_clip=training_config["gradient_clip"],
+            device=device,
+        )
+        results_subdir = "task1_d3qn"
+        progress_desc = "Training D3QN"
+    elif agent_type == "d3qn_er":
+        agent = D3QNERAgent(
+            observation_shape=observation_shape,
+            action_size=action_size,
+            gamma=training_config["gamma"],
+            learning_rate=training_config["learning_rate"],
+            epsilon_start=training_config["epsilon_start"],
+            epsilon_min=training_config["epsilon_min"],
+            epsilon_decay=training_config["epsilon_decay"],
+            target_update_freq=training_config["target_update_freq"],
+            gradient_clip=training_config["gradient_clip"],
+            replay_buffer_capacity=replay_config["capacity"],
+            learning_starts=replay_config["learning_starts"],
+            batch_size=training_config["batch_size"],
+            device=device,
+        )
+        results_subdir = "task2_d3qn_er"
+        progress_desc = "Training D3QN+ER"
+    else:
+        raise ValueError(
+            "Unsupported agent_type in config.yaml. Expected one of: 'd3qn', 'd3qn_er'."
+        )
 
     logger = TrainingLogger()
-    results_dir = project_root / "results" / "task1_d3qn"
+    results_dir = project_root / "results" / results_subdir
     results_dir.mkdir(parents=True, exist_ok=True)
 
     progress_bar = tqdm(
         range(1, training_config["episodes"] + 1),
-        desc="Training D3QN",
+        desc=progress_desc,
         unit="episode",
     )
 
@@ -111,16 +160,23 @@ def train() -> None:
 
             state = next_state
             episode_reward += float(reward)
-            episode_losses.append(loss)
+
+            if loss is not None:
+                episode_losses.append(loss)
 
         average_loss = float(np.mean(episode_losses)) if episode_losses else 0.0
         logger.log_episode(episode_reward=episode_reward, average_loss=average_loss)
 
-        progress_bar.set_postfix(
-            reward=f"{episode_reward:.2f}",
-            loss=f"{average_loss:.4f}",
-            epsilon=f"{agent.epsilon:.4f}",
-        )
+        progress_metrics: dict[str, str | int] = {
+            "reward": f"{episode_reward:.2f}",
+            "loss": f"{average_loss:.4f}",
+            "epsilon": f"{agent.epsilon:.4f}",
+        }
+
+        if isinstance(agent, D3QNERAgent):
+            progress_metrics["buffer"] = len(agent.replay_buffer)
+
+        progress_bar.set_postfix(progress_metrics)
 
     logger.save(results_dir)
     plot_training_curves(logger.episode_rewards, logger.episode_losses, results_dir)

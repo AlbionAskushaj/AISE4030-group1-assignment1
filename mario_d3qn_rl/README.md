@@ -7,7 +7,7 @@ The codebase currently includes:
 - Task 1: D3QN (Dueling Double DQN) without experience replay.
 - Task 2: D3QN with uniform experience replay.
 
-The project is structured so Task 3 can be added without rewriting common environment, network, logging, and plotting code.
+The project uses a single configuration file and a single training script so each assignment variant can be selected without changing code.
 
 ## Features
 
@@ -49,12 +49,21 @@ From the `mario_d3qn_rl/` directory:
 python training_script.py
 ```
 
+Before running, set `agent_type` in `config.yaml`:
+
+- `d3qn` for Task 1
+- `d3qn_er` for Task 2
+
 Task 1 artifacts are saved in `results/task1_d3qn/`.
 
-For Task 2:
-
-```bash
-python training_task2.py
-```
-
 Task 2 artifacts are saved in `results/task2_d3qn_er/`.
+
+The default `training.episodes` value in `config.yaml` is `5000`.
+
+## Device Selection
+
+`config.yaml` supports these device values:
+
+- `auto`: use CUDA if available, otherwise fall back to CPU
+- `cuda`: request GPU training and fall back to CPU if CUDA is unavailable
+- `cpu`: force CPU training
