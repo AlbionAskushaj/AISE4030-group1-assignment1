@@ -6,6 +6,7 @@ The codebase currently includes:
 
 - Task 1: D3QN (Dueling Double DQN) without experience replay.
 - Task 2: D3QN with uniform experience replay.
+- Task 3: D3QN with prioritized experience replay.
 
 The project uses a single configuration file and a single training script so each assignment variant can be selected without changing code.
 
@@ -53,10 +54,13 @@ Before running, set `agent_type` in `config.yaml`:
 
 - `d3qn` for Task 1
 - `d3qn_er` for Task 2
+- `d3qn_per` for Task 3
 
 Task 1 artifacts are saved in `results/task1_d3qn/`.
 
 Task 2 artifacts are saved in `results/task2_d3qn_er/`.
+
+Task 3 artifacts are saved in `results/task3_d3qn_per/`.
 
 The default `training.episodes` value in `config.yaml` is `5000`.
 

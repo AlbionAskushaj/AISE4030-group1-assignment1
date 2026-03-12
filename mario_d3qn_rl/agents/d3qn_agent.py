@@ -205,6 +205,52 @@ class D3QNAgent:
 
         self.target_network.load_state_dict(self.policy_network.state_dict())
 
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Build a serializable snapshot of the agent state.
+
+        Args:
+            None
+
+        Returns:
+            dict[str, Any]: Checkpoint payload for later restoration.
+        """
+
+        return {
+            "policy_network_state_dict": self.policy_network.state_dict(),
+            "target_network_state_dict": self.target_network.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "training_steps": self.training_steps,
+        }
+
+    def save_checkpoint(self, output_path: str | Any) -> None:
+        """Persist the current agent state to disk.
+
+        Args:
+            output_path (str | Any): Destination path accepted by ``torch.save``.
+
+        Returns:
+            None
+        """
+
+        torch.save(self.checkpoint_state(), output_path, pickle_protocol=4)
+
+    def load_checkpoint_state(self, checkpoint: dict[str, Any]) -> None:
+        """Restore the agent state from a checkpoint payload.
+
+        Args:
+            checkpoint (dict[str, Any]): Serialized checkpoint payload.
+
+        Returns:
+            None
+        """
+
+        self.policy_network.load_state_dict(checkpoint["policy_network_state_dict"])
+        self.target_network.load_state_dict(checkpoint["target_network_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.epsilon = float(checkpoint["epsilon"])
+        self.training_steps = int(checkpoint["training_steps"])
+
     def _update_epsilon(self) -> None:
         """Decay epsilon after every environment step.
 
@@ -227,21 +273,40 @@ class D3QNAgent:
             torch.Tensor: Float tensor on `self.device` with shape `(batch, channels, height, width)`.
         """
 
-        state_array = np.array(state, copy=False, dtype=np.float32)
+        state_array = np.asarray(state, dtype=np.float32)
+
+        if state_array.ndim == 3:
+            return torch.as_tensor(
+                state_array[np.newaxis], dtype=torch.float32, device=self.device
+            ) / 255.0
 
         if state_array.ndim == 4 and state_array.shape[-1] == 1:
             state_array = np.squeeze(state_array, axis=-1)
-
-        if state_array.ndim == 3:
-            if state_array.shape[-1] in (1, 4) and state_array.shape[0] not in (1, 4):
-                state_array = np.transpose(state_array, (2, 0, 1))
-            state_array = np.expand_dims(state_array, axis=0)
-        elif state_array.ndim == 4 and state_array.shape[-1] in (1, 4):
+        if state_array.ndim == 4 and state_array.shape[-1] in (1, 4):
             state_array = np.transpose(state_array, (0, 3, 1, 2))
+        if state_array.ndim == 3:
+            state_array = np.expand_dims(state_array, axis=0)
 
-        state_tensor = torch.as_tensor(state_array, dtype=torch.float32, device=self.device)
+        return torch.as_tensor(state_array, dtype=torch.float32, device=self.device) / 255.0
 
-        if state_tensor.max() > 1.0:
-            state_tensor = state_tensor / 255.0
+    def _state_batch_to_tensor(self, states: list[Any]) -> torch.Tensor:
+        """Convert a list of environment states to one normalized NCHW tensor.
 
-        return state_tensor
+        Args:
+            states (list[Any]): Raw state outputs from the wrapped environment.
+
+        Returns:
+            torch.Tensor: Float tensor on `self.device` with shape `(batch, channels, height, width)`.
+        """
+
+        state_arrays = [np.array(state, copy=False, dtype=np.float32) for state in states]
+        batch_array = np.stack(state_arrays, axis=0)
+
+        if batch_array.ndim == 5 and batch_array.shape[-1] == 1:
+            batch_array = np.squeeze(batch_array, axis=-1)
+
+        if batch_array.ndim == 4 and batch_array.shape[-1] in (1, 4):
+            batch_array = np.transpose(batch_array, (0, 3, 1, 2))
+
+        batch_tensor = torch.as_tensor(batch_array, dtype=torch.float32, device=self.device)
+        return batch_tensor / 255.0

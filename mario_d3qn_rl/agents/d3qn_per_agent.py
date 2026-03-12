@@ -1,17 +1,19 @@
-"""D3QN agent implementation for Task 2 with uniform experience replay."""
+"""D3QN agent implementation for Task 3 with prioritized experience replay."""
 
 from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 
 from agents.d3qn_agent import D3QNAgent
-from buffers.replay_buffer import ReplayBuffer
+from buffers.per_buffer import PrioritizedReplayBuffer
 
 
-class D3QNERAgent(D3QNAgent):
-    """Task 2 D3QN agent with a uniform replay buffer and mini-batch updates."""
+class D3QNPERAgent(D3QNAgent):
+    """Task 3 D3QN agent using prioritized experience replay and IS weighting."""
 
     def __init__(
         self,
@@ -27,9 +29,14 @@ class D3QNERAgent(D3QNAgent):
         replay_buffer_capacity: int,
         learning_starts: int,
         batch_size: int,
+        per_alpha: float,
+        per_beta_start: float,
+        per_beta_end: float,
+        per_epsilon: float,
+        training_total_steps: int,
         device: torch.device,
     ) -> None:
-        """Initialize replay-enabled D3QN agent.
+        """Initialize replay-enabled D3QN agent with PER.
 
         Args:
             observation_shape (tuple[int, ...]): Model input shape as `(channels, height, width)`.
@@ -44,6 +51,11 @@ class D3QNERAgent(D3QNAgent):
             replay_buffer_capacity (int): Maximum transitions stored in the replay buffer.
             learning_starts (int): Minimum buffer size required before learning begins.
             batch_size (int): Number of sampled transitions per gradient update.
+            per_alpha (float): Prioritization exponent.
+            per_beta_start (float): Initial importance-sampling exponent.
+            per_beta_end (float): Final importance-sampling exponent.
+            per_epsilon (float): Small constant added to TD errors before prioritization.
+            training_total_steps (int): Total scheduled environment steps for beta annealing.
             device (torch.device): Device used for tensor operations.
 
         Returns:
@@ -63,9 +75,20 @@ class D3QNERAgent(D3QNAgent):
             device=device,
         )
 
-        self.replay_buffer = ReplayBuffer(capacity=replay_buffer_capacity)
+        self.replay_buffer = PrioritizedReplayBuffer(
+            capacity=replay_buffer_capacity,
+            alpha=per_alpha,
+            epsilon=per_epsilon,
+            state_shape=observation_shape,
+            batch_size=batch_size,
+        )
         self.learning_starts = int(learning_starts)
         self.batch_size = int(batch_size)
+        self.beta_start = float(per_beta_start)
+        self.beta_end = float(per_beta_end)
+        self.beta = float(per_beta_start)
+        self.beta_anneal_steps = max(int(training_total_steps), 1)
+        self.beta_step = (self.beta_end - self.beta_start) / self.beta_anneal_steps
 
     def learn(
         self,
@@ -75,7 +98,7 @@ class D3QNERAgent(D3QNAgent):
         next_state: Any,
         done: bool,
     ) -> float | None:
-        """Store transition and perform one replay-based update when eligible.
+        """Store transition and perform one PER-based update when eligible.
 
         Args:
             state (Any): Current state observation.
@@ -100,33 +123,64 @@ class D3QNERAgent(D3QNAgent):
             self._update_epsilon()
             return None
 
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+        self._anneal_beta()
 
-        states_tensor = self._stack_state_batch(states)
-        next_states_tensor = self._stack_state_batch(next_states)
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            dones,
+            indices,
+            weights,
+        ) = self.replay_buffer.sample(self.batch_size, beta=self.beta)
+
+        states_tensor = torch.as_tensor(states, dtype=torch.float32, device=self.device)
+        next_states_tensor = torch.as_tensor(next_states, dtype=torch.float32, device=self.device)
         actions_tensor = torch.as_tensor(actions, dtype=torch.long, device=self.device)
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
         dones_tensor = torch.as_tensor(dones, dtype=torch.float32, device=self.device)
+        weights_tensor = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
 
-        return self._learn_from_batch(
-            states=states_tensor,
-            actions=actions_tensor,
-            rewards=rewards_tensor,
-            next_states=next_states_tensor,
-            dones=dones_tensor,
+        current_q = self.policy_network(states_tensor).gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
+
+        with torch.no_grad():
+            next_actions = self.policy_network(next_states_tensor).argmax(dim=1, keepdim=True)
+            next_q_target = self.target_network(next_states_tensor).gather(1, next_actions).squeeze(1)
+            target_q = rewards_tensor + self.gamma * next_q_target * (1.0 - dones_tensor)
+
+        td_errors = target_q - current_q
+        per_sample_loss = F.smooth_l1_loss(current_q, target_q, reduction="none")
+        loss = torch.mean(weights_tensor * per_sample_loss)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_network.parameters(), max_norm=self.gradient_clip)
+        self.optimizer.step()
+
+        self.replay_buffer.update_priorities(
+            indices=indices,
+            td_errors=td_errors.detach().abs().cpu().numpy(),
         )
 
-    def _stack_state_batch(self, states: list[Any]) -> torch.Tensor:
-        """Convert a list of raw observations into one batched tensor.
+        self.training_steps += 1
+        self._update_epsilon()
+
+        if self.training_steps % self.target_update_freq == 0:
+            self.sync_target_network()
+
+        return float(loss.item())
+    def _anneal_beta(self) -> None:
+        """Linearly anneal beta toward its final value.
 
         Args:
-            states (list[Any]): Sequence of state observations.
+            None
 
         Returns:
-            torch.Tensor: Batched state tensor with shape `(batch, channels, height, width)`.
+            None
         """
 
-        return self._state_batch_to_tensor(states)
+        self.beta = min(self.beta_end, self.beta + self.beta_step)
 
     def checkpoint_state(self) -> dict[str, Any]:
         """Build a serializable snapshot without replay buffer contents.
@@ -138,10 +192,12 @@ class D3QNERAgent(D3QNAgent):
             dict[str, Any]: Checkpoint payload for later restoration.
         """
 
-        return super().checkpoint_state()
+        checkpoint = super().checkpoint_state()
+        checkpoint["beta"] = self.beta
+        return checkpoint
 
     def load_checkpoint_state(self, checkpoint: dict[str, Any]) -> None:
-        """Restore agent and replay buffer state from a checkpoint payload.
+        """Restore agent and PER buffer state from a checkpoint payload.
 
         Args:
             checkpoint (dict[str, Any]): Serialized checkpoint payload.
@@ -151,6 +207,8 @@ class D3QNERAgent(D3QNAgent):
         """
 
         super().load_checkpoint_state(checkpoint)
+        self.beta = float(checkpoint.get("beta", self.beta))
+
         # Replay-buffer contents are intentionally not restored from checkpoints
         # to keep checkpoint files small and stable.
         return

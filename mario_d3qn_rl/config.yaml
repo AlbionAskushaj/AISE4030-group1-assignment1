@@ -1,11 +1,15 @@
 env_name: SuperMarioBros-1-1-v3
-agent_type: d3qn
+agent_type: d3qn_per
 
 training:
   episodes: 5000
   gamma: 0.9
   learning_rate: 0.00025
   batch_size: 32
+  save_every_episodes: 25
+  plot_every_episodes: 100
+  checkpoint_every_episodes: 50
+  resume_from_checkpoint: true
   epsilon_start: 1.0
   epsilon_min: 0.1
   epsilon_decay: 0.99999975
@@ -15,5 +19,11 @@ training:
 replay:
   capacity: 100000
   learning_starts: 1000
+
+per:
+  alpha: 0.6
+  beta_start: 0.4
+  beta_end: 1.0
+  epsilon: 1.0e-5
 
 device: auto
