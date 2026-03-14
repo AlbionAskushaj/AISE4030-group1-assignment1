@@ -4,7 +4,7 @@ gymnasium==1.2.3
 gym==0.26.2
 gym-super-mario-bros==7.4.0
 nes-py
-numpy==1.26.4
+numpy>=1.26.4,<2
 matplotlib
 pyyaml
 tqdm 

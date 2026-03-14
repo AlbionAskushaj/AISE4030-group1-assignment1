@@ -1,5 +1,5 @@
 env_name: SuperMarioBros-1-1-v3
-agent_type: d3qn
+agent_type: d3qn_er
 
 training:
   episodes: 5000
